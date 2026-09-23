@@ -371,3 +371,41 @@ func TestRedisStorage_GracePeriodConfiguration(t *testing.T) {
 		assert.Equal(t, "45s", rs.GracePeriod)
 	})
 }
+
+// Test helpers for inspecting and cleaning up redisClientPool during tests.
+
+func (p *redisClientPool) getRefCount(key string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if entry, exists := p.entries[key]; exists {
+		return entry.refCount
+	}
+	return 0
+}
+
+func (p *redisClientPool) hasLingerTimer(key string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if entry, exists := p.entries[key]; exists {
+		return entry.lingerTimer != nil
+	}
+	return false
+}
+
+func (p *redisClientPool) len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.entries)
+}
+
+func (p *redisClientPool) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for k, entry := range p.entries {
+		if entry.lingerTimer != nil {
+			entry.lingerTimer.Stop()
+		}
+		_ = entry.client.Close()
+		delete(p.entries, k)
+	}
+}
