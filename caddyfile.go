@@ -347,10 +347,11 @@ func (rs *RedisStorage) Cleanup() error {
 	if rs.poolKeyVal != "" {
 		defaultPool.release(rs.poolKeyVal, rs.safePoolKey(), rs.gracePeriodDuration, rs.logger)
 		rs.poolKeyVal = ""
+		rs.client = nil
 	} else if rs.client != nil {
 		rs.client.Close()
+		rs.client = nil
 	}
-
 	return nil
 }
 
