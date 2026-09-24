@@ -228,6 +228,50 @@ func TestRedisStorage_LifecycleIntegration_ReloadSharing(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRedisStorage_DoubleCleanup(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	defer defaultPool.reset()
+
+	ctx := context.Background()
+
+	// Provision rs1
+	rs1 := New()
+	rs1.Address = []string{mr.Addr()}
+	rs1.DB = DBIndex("0")
+	err = rs1.finalizeConfiguration(ctx)
+	require.NoError(t, err)
+
+	// Provision rs2 (shares pooled client, refCount=2)
+	rs2 := New()
+	rs2.Address = []string{mr.Addr()}
+	rs2.DB = DBIndex("0")
+	err = rs2.finalizeConfiguration(ctx)
+	require.NoError(t, err)
+
+	// Verify both share the client and refCount is 2
+	assert.Same(t, rs1.client, rs2.client)
+	assert.Equal(t, 2, defaultPool.getRefCount(rs1.poolKeyVal))
+
+	// Call Cleanup() twice on rs1
+	err = rs1.Cleanup()
+	require.NoError(t, err)
+	err = rs1.Cleanup()
+	require.NoError(t, err)
+
+	// refCount must be 1, NOT 0 (second Cleanup is idempotent)
+	assert.Equal(t, 1, defaultPool.getRefCount(rs2.poolKeyVal))
+
+	// rs2 must still be functional
+	assert.NoError(t, rs2.client.Ping(ctx).Err())
+
+	err = rs2.Store(ctx, "k", []byte("v"))
+	assert.NoError(t, err)
+
+	_ = rs2.Cleanup()
+}
+
 func TestRedisStorage_DelayedShutdown_BackgroundOperation(t *testing.T) {
 	mr, err := miniredis.Run()
 	require.NoError(t, err)

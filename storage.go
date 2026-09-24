@@ -141,6 +141,7 @@ type RedisStorage struct {
 	locks               *sync.Map
 	poolKeyVal          string
 	gracePeriodDuration time.Duration
+	cleanupOnce         *sync.Once
 }
 
 // CompressionMode specifies the compression algorithm used when storing values.
@@ -233,6 +234,7 @@ func New() *RedisStorage {
 		TlsEnabled:  defaultTLS,
 		TlsInsecure: defaultTLSInsecure,
 		GracePeriod: defaultGracePeriodStr,
+		cleanupOnce: new(sync.Once),
 	}
 	return &rs
 }
@@ -387,6 +389,9 @@ func (rs *RedisStorage) initRedisClient(ctx context.Context) error {
 	key := rs.poolKey()
 	safeKey := rs.safePoolKey()
 	rs.locks = &sync.Map{}
+	if rs.cleanupOnce == nil {
+		rs.cleanupOnce = new(sync.Once)
+	}
 
 	client, locker, err := defaultPool.acquire(key, safeKey, rs.logger, func() (redis.UniversalClient, *redislock.Client, error) {
 		c, err := rs.createRedisClient(ctx)

@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -344,14 +345,16 @@ func normalizeKeyPrefix(prefix string) (string, error) {
 }
 
 func (rs *RedisStorage) Cleanup() error {
-	if rs.poolKeyVal != "" {
-		defaultPool.release(rs.poolKeyVal, rs.safePoolKey(), rs.gracePeriodDuration, rs.logger)
-		rs.poolKeyVal = ""
-		rs.client = nil
-	} else if rs.client != nil {
-		rs.client.Close()
-		rs.client = nil
+	if rs.cleanupOnce == nil {
+		rs.cleanupOnce = new(sync.Once)
 	}
+	rs.cleanupOnce.Do(func() {
+		if rs.poolKeyVal != "" {
+			defaultPool.release(rs.poolKeyVal, rs.safePoolKey(), rs.gracePeriodDuration, rs.logger)
+		} else if rs.client != nil {
+			rs.client.Close()
+		}
+	})
 	return nil
 }
 
