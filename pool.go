@@ -61,7 +61,7 @@ type poolIdentity struct {
 	RouteRandomly      bool
 }
 
-func (pi *poolIdentity) String() string {
+func (pi poolIdentity) String() string {
 	return fmt.Sprintf("%s|%s|%s", pi.ClientType, pi.Addrs, pi.DB)
 }
 

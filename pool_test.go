@@ -29,6 +29,11 @@ import (
 	"go.uber.org/zap"
 )
 
+func TestClientPool_String(t *testing.T) {
+	key := poolIdentity{ClientType: "simple", Addrs: "test-pool-key", DB: "database"}
+	assert.Equal(t, key.String(), "simple|test-pool-key|database")
+}
+
 func TestClientPool_ReferenceCounting(t *testing.T) {
 	mr, err := miniredis.Run()
 	require.NoError(t, err)
