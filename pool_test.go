@@ -44,28 +44,28 @@ func TestClientPool_ReferenceCounting(t *testing.T) {
 		return c, redislock.New(c), nil
 	}
 
-	key := "test-pool-key"
+	key := poolIdentity{ClientType: "simple", Addrs: "test-pool-key"}
 
 	// First acquire: factory is called, refCount becomes 1
-	c1, _, err := pool.acquire(key, key, nil, factory)
+	c1, _, err := pool.acquire(key, nil, factory)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&factoryCalls))
 	assert.Equal(t, 1, pool.getRefCount(key))
 
 	// Second acquire with same key: factory not called, refCount becomes 2
-	c2, _, err := pool.acquire(key, key, nil, factory)
+	c2, _, err := pool.acquire(key, nil, factory)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&factoryCalls))
 	assert.Equal(t, 2, pool.getRefCount(key))
 	assert.Same(t, c1, c2)
 
 	// First release: refCount drops to 1, client not closed
-	pool.release(key, key, 0, nil)
+	pool.release(key, 0, nil)
 	assert.Equal(t, 1, pool.getRefCount(key))
 	assert.NoError(t, c1.Ping(context.Background()).Err())
 
 	// Second release with gracePeriod 0: client closed immediately, entry deleted
-	pool.release(key, key, 0, nil)
+	pool.release(key, 0, nil)
 	assert.Equal(t, 0, pool.getRefCount(key))
 	assert.Equal(t, 0, pool.len())
 	assert.Error(t, c1.Ping(context.Background()).Err())
@@ -84,12 +84,12 @@ func TestClientPool_DelayedShutdown(t *testing.T) {
 		return c, redislock.New(c), nil
 	}
 
-	key := "test-linger-key"
-	client, _, err := pool.acquire(key, key, nil, factory)
+	key := poolIdentity{ClientType: "simple", Addrs: "test-linger-key"}
+	client, _, err := pool.acquire(key, nil, factory)
 	require.NoError(t, err)
 
 	gracePeriod := 80 * time.Millisecond
-	pool.release(key, key, gracePeriod, nil)
+	pool.release(key, gracePeriod, nil)
 
 	// Immediately after release: refCount is 0, but timer is active and client still works
 	assert.Equal(t, 0, pool.getRefCount(key))
@@ -119,19 +119,19 @@ func TestClientPool_ReacquireDuringGracePeriod(t *testing.T) {
 		return c, redislock.New(c), nil
 	}
 
-	key := "test-reacquire-key"
-	c1, _, err := pool.acquire(key, key, nil, factory)
+	key := poolIdentity{ClientType: "simple", Addrs: "test-reacquire-key"}
+	c1, _, err := pool.acquire(key, nil, factory)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&factoryCalls))
 
 	// Release with 150ms grace period
 	gracePeriod := 150 * time.Millisecond
-	pool.release(key, key, gracePeriod, nil)
+	pool.release(key, gracePeriod, nil)
 	assert.True(t, pool.hasLingerTimer(key))
 
 	// Sleep 30ms (well within grace period), then re-acquire
 	time.Sleep(30 * time.Millisecond)
-	c2, _, err := pool.acquire(key, key, nil, factory)
+	c2, _, err := pool.acquire(key, nil, factory)
 	require.NoError(t, err)
 
 	// Timer should be cancelled, factory NOT called again, same client returned
@@ -146,7 +146,7 @@ func TestClientPool_ReacquireDuringGracePeriod(t *testing.T) {
 	assert.Equal(t, 1, pool.len())
 
 	// Finally release with 0 grace period to clean up
-	pool.release(key, key, 0, nil)
+	pool.release(key, 0, nil)
 	assert.Equal(t, 0, pool.len())
 }
 
@@ -163,19 +163,22 @@ func TestClientPool_DistinctKeys(t *testing.T) {
 		return c, redislock.New(c), nil
 	}
 
-	c1, _, err := pool.acquire("key1", "key1", nil, factory)
+	key1 := poolIdentity{ClientType: "simple", Addrs: "test-distinct-key1"}
+	key2 := poolIdentity{ClientType: "simple", Addrs: "test-distinct-key2"}
+
+	c1, _, err := pool.acquire(key1, nil, factory)
 	require.NoError(t, err)
-	c2, _, err := pool.acquire("key2", "key2", nil, factory)
+	c2, _, err := pool.acquire(key2, nil, factory)
 	require.NoError(t, err)
 
 	assert.NotSame(t, c1, c2)
 	assert.Equal(t, 2, pool.len())
 
-	pool.release("key1", "key1", 0, nil)
+	pool.release(key1, 0, nil)
 	assert.Equal(t, 1, pool.len())
 	assert.NoError(t, c2.Ping(context.Background()).Err())
 
-	pool.release("key2", "key2", 0, nil)
+	pool.release(key2, 0, nil)
 	assert.Equal(t, 0, pool.len())
 }
 
@@ -418,7 +421,7 @@ func TestRedisStorage_GracePeriodConfiguration(t *testing.T) {
 
 // Test helpers for inspecting and cleaning up redisClientPool during tests.
 
-func (p *redisClientPool) getRefCount(key string) int {
+func (p *redisClientPool) getRefCount(key poolIdentity) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if entry, exists := p.entries[key]; exists {
@@ -427,7 +430,7 @@ func (p *redisClientPool) getRefCount(key string) int {
 	return 0
 }
 
-func (p *redisClientPool) hasLingerTimer(key string) bool {
+func (p *redisClientPool) hasLingerTimer(key poolIdentity) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if entry, exists := p.entries[key]; exists {

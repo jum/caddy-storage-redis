@@ -349,8 +349,8 @@ func (rs *RedisStorage) Cleanup() error {
 		rs.cleanupOnce = new(sync.Once)
 	}
 	rs.cleanupOnce.Do(func() {
-		if rs.poolKeyVal != "" {
-			defaultPool.release(rs.poolKeyVal, rs.safePoolKey(), rs.gracePeriodDuration, rs.logger)
+		if rs.poolKeyVal != (poolIdentity{}) {
+			defaultPool.release(rs.poolKeyVal, rs.gracePeriodDuration, rs.logger)
 		} else if rs.client != nil {
 			rs.client.Close()
 		}

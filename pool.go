@@ -15,6 +15,9 @@
 package storageredis
 
 import (
+	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,22 +38,71 @@ type pooledClientEntry struct {
 	lingerTimer *time.Timer
 }
 
+// poolIdentity is the connection identity used to key the client pool - two
+// RedisStorage configs share a client iff they produce an identical
+// poolIdentity. Deliberately narrower than the full RedisStorage struct:
+// fields like KeyPrefix/Compression/EncryptionKey don't affect the
+// underlying go-redis client, so configs differing only in those should
+// still share a connection.
+type poolIdentity struct {
+	ClientType         string
+	Addrs              string // pre-sorted, comma-joined - see poolKey()
+	DB                 DBIndex
+	Timeout            string
+	Username           string
+	Password           string
+	SentinelPassword   string
+	MasterName         string
+	TlsEnabled         bool
+	TlsInsecure        bool
+	TlsServerCertsPEM  string
+	TlsServerCertsPath string
+	RouteByLatency     bool
+	RouteRandomly      bool
+}
+
+func (pi *poolIdentity) String() string {
+	return fmt.Sprintf("%s|%s|%s", pi.ClientType, pi.Addrs, pi.DB)
+}
+
+func (rs *RedisStorage) poolKey() poolIdentity {
+	addrs := make([]string, len(rs.Address))
+	copy(addrs, rs.Address)
+	sort.Strings(addrs)
+
+	return poolIdentity{
+		ClientType:         rs.ClientType,
+		Addrs:              strings.Join(addrs, ","),
+		DB:                 rs.DB,
+		Timeout:            rs.Timeout,
+		Username:           rs.Username,
+		Password:           rs.Password,
+		SentinelPassword:   rs.SentinelPassword,
+		MasterName:         rs.MasterName,
+		TlsEnabled:         rs.TlsEnabled,
+		TlsInsecure:        rs.TlsInsecure,
+		TlsServerCertsPEM:  rs.TlsServerCertsPEM,
+		TlsServerCertsPath: rs.TlsServerCertsPath,
+		RouteByLatency:     rs.RouteByLatency,
+		RouteRandomly:      rs.RouteRandomly,
+	}
+}
+
 type redisClientPool struct {
 	mu      sync.Mutex
-	entries map[string]*pooledClientEntry
+	entries map[poolIdentity]*pooledClientEntry
 }
 
 var defaultPool = newRedisClientPool()
 
 func newRedisClientPool() *redisClientPool {
 	return &redisClientPool{
-		entries: make(map[string]*pooledClientEntry),
+		entries: make(map[poolIdentity]*pooledClientEntry),
 	}
 }
 
 func (p *redisClientPool) acquire(
-	key string,
-	safeKey string,
+	key poolIdentity,
 	logger *zap.SugaredLogger,
 	factory func() (redis.UniversalClient, *redislock.Client, error),
 ) (redis.UniversalClient, *redislock.Client, error) {
@@ -64,12 +116,12 @@ func (p *redisClientPool) acquire(
 	if entry, exists := p.entries[key]; exists {
 		if entry.lingerTimer != nil {
 			if entry.lingerTimer.Stop() {
-				logger.Debugf("Cancelled delayed shutdown for pooled Redis client (%s)", safeKey)
+				logger.Debugf("Cancelled delayed shutdown for pooled Redis client (%s)", key)
 			}
 			entry.lingerTimer = nil
 		}
 		entry.refCount++
-		logger.Debugf("Reused pooled Redis client (%s), refCount: %d", safeKey, entry.refCount)
+		logger.Debugf("Reused pooled Redis client (%s), refCount: %d", key, entry.refCount)
 		return entry.client, entry.locker, nil
 	}
 
@@ -83,13 +135,12 @@ func (p *redisClientPool) acquire(
 		locker:   locker,
 		refCount: 1,
 	}
-	logger.Debugf("Created new pooled Redis client (%s), refCount: 1", safeKey)
+	logger.Debugf("Created new pooled Redis client (%s), refCount: 1", key)
 	return client, locker, nil
 }
 
 func (p *redisClientPool) release(
-	key string,
-	safeKey string,
+	key poolIdentity,
 	gracePeriod time.Duration,
 	logger *zap.SugaredLogger,
 ) {
@@ -106,7 +157,7 @@ func (p *redisClientPool) release(
 	}
 
 	entry.refCount--
-	logger.Debugf("Released pooled Redis client (%s), refCount: %d", safeKey, entry.refCount)
+	logger.Debugf("Released pooled Redis client (%s), refCount: %d", key, entry.refCount)
 
 	if entry.refCount > 0 {
 		return
@@ -120,9 +171,9 @@ func (p *redisClientPool) release(
 			entry.lingerTimer = nil
 		}
 		if err := entry.client.Close(); err != nil {
-			logger.Warnf("Error closing Redis client (%s): %v", safeKey, err)
+			logger.Warnf("Error closing Redis client (%s): %v", key, err)
 		}
-		logger.Debugf("Closed Redis client immediately (%s)", safeKey)
+		logger.Debugf("Closed Redis client immediately (%s)", key)
 		return
 	}
 
@@ -130,7 +181,7 @@ func (p *redisClientPool) release(
 		entry.lingerTimer.Stop()
 	}
 
-	logger.Debugf("Scheduled delayed shutdown for Redis client (%s) in %v", safeKey, gracePeriod)
+	logger.Debugf("Scheduled delayed shutdown for Redis client (%s) in %v", key, gracePeriod)
 
 	entry.lingerTimer = time.AfterFunc(gracePeriod, func() {
 		p.mu.Lock()
@@ -143,8 +194,8 @@ func (p *redisClientPool) release(
 		p.mu.Unlock()
 
 		if err := entry.client.Close(); err != nil {
-			logger.Warnf("Error closing Redis client after grace period (%s): %v", safeKey, err)
+			logger.Warnf("Error closing Redis client after grace period (%s): %v", key, err)
 		}
-		logger.Infof("Closed Redis client after grace period (%s)", safeKey)
+		logger.Infof("Closed Redis client after grace period (%s)", key)
 	})
 }

@@ -24,7 +24,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,7 +138,7 @@ type RedisStorage struct {
 	locker              *redislock.Client
 	logger              *zap.SugaredLogger
 	locks               *sync.Map
-	poolKeyVal          string
+	poolKeyVal          poolIdentity
 	gracePeriodDuration time.Duration
 	cleanupOnce         *sync.Once
 }
@@ -237,37 +236,6 @@ func New() *RedisStorage {
 		cleanupOnce: new(sync.Once),
 	}
 	return &rs
-}
-
-func (rs *RedisStorage) poolKey() string {
-	addrs := make([]string, len(rs.Address))
-	copy(addrs, rs.Address)
-	sort.Strings(addrs)
-
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%t|%t|%s|%s|%t|%t",
-		rs.ClientType,
-		strings.Join(addrs, ","),
-		rs.DB,
-		rs.Timeout,
-		rs.Username,
-		rs.Password,
-		rs.SentinelPassword,
-		rs.MasterName,
-		rs.TlsEnabled,
-		rs.TlsInsecure,
-		rs.TlsServerCertsPEM,
-		rs.TlsServerCertsPath,
-		rs.RouteByLatency,
-		rs.RouteRandomly,
-	)
-}
-
-func (rs *RedisStorage) safePoolKey() string {
-	addrs := make([]string, len(rs.Address))
-	copy(addrs, rs.Address)
-	sort.Strings(addrs)
-
-	return fmt.Sprintf("%s|%s|%s", rs.ClientType, strings.Join(addrs, ","), rs.DB)
 }
 
 // createRedisClient creates and validates a new Redis client instance based on configuration
@@ -387,13 +355,12 @@ func (rs *RedisStorage) createRedisClient(ctx context.Context) (redis.UniversalC
 // Initialize Redis client and locker using reference-counted pool
 func (rs *RedisStorage) initRedisClient(ctx context.Context) error {
 	key := rs.poolKey()
-	safeKey := rs.safePoolKey()
 	rs.locks = &sync.Map{}
 	if rs.cleanupOnce == nil {
 		rs.cleanupOnce = new(sync.Once)
 	}
 
-	client, locker, err := defaultPool.acquire(key, safeKey, rs.logger, func() (redis.UniversalClient, *redislock.Client, error) {
+	client, locker, err := defaultPool.acquire(key, rs.logger, func() (redis.UniversalClient, *redislock.Client, error) {
 		c, err := rs.createRedisClient(ctx)
 		if err != nil {
 			return nil, nil, err
